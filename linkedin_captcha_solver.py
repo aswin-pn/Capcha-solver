@@ -65,6 +65,11 @@ class LinkedInCaptchaSolver:
         try:
             print("Checking for security verification...")
             
+            # Clear any existing cache at the very beginning
+            print("🔄 Clearing any existing CAPTCHA cache at start...")
+            await self.clear_captcha_cache()
+            await asyncio.sleep(1)
+            
             # First check if we're on a challenge URL
             current_url = self.page.url
             if "checkpoint/challenge" in current_url:
@@ -270,6 +275,11 @@ class LinkedInCaptchaSolver:
                 # except:
                 #     pass
                 
+                # Clear any existing cache BEFORE taking screenshot
+                print("🔄 Clearing any existing CAPTCHA cache before starting...")
+                await self.clear_captcha_cache()
+                await asyncio.sleep(1)
+                
                 # Send screenshot to solving server
                 try:
                     # Try to find a container element first
@@ -293,8 +303,8 @@ class LinkedInCaptchaSolver:
                         screenshot = await best_frame.page.screenshot(full_page=True, type='png')
                         print("✅ Took full page screenshot as fallback")
                     
-                    # Send to solving server
-                    sent = await self.send_captcha_to_server(screenshot)
+                    # Send to solving server (without clearing again since we already did)
+                    sent = await self.send_captcha_to_server_direct(screenshot)
                     if not sent:
                         print("Failed to send to solving server")
                         return False
@@ -619,16 +629,10 @@ class LinkedInCaptchaSolver:
             print(f"⚠️  Error clearing cache: {e}")
             return False
 
-    async def send_captcha_to_server(self, image_bytes):
-        print("Attempting to send CAPTCHA to www.sellmyagent.com...")
+    async def send_captcha_to_server_direct(self, image_bytes):
+        """Send CAPTCHA image without clearing cache (for when cache is already cleared)"""
+        print("Sending CAPTCHA image to www.sellmyagent.com...")
         try:
-            # First clear any existing cache
-            await self.clear_captcha_cache()
-            
-            # Wait a moment for cache to clear
-            await asyncio.sleep(1)
-            
-            # Now send the actual CAPTCHA image
             files = {'image': ('captcha.png', image_bytes, 'image/png')}
             response = requests.post('https://www.sellmyagent.com/solve', files=files, timeout=10)
             if response.status_code == 200:
@@ -639,6 +643,21 @@ class LinkedInCaptchaSolver:
                 return False
         except Exception as e:
             print(f"❌ Error sending CAPTCHA to server: {e}")
+            return False
+
+    async def send_captcha_to_server(self, image_bytes):
+        print("Attempting to send CAPTCHA to www.sellmyagent.com...")
+        try:
+            # First clear any existing cache
+            await self.clear_captcha_cache()
+            
+            # Wait a moment for cache to clear
+            await asyncio.sleep(1)
+            
+            # Now send the actual CAPTCHA image
+            return await self.send_captcha_to_server_direct(image_bytes)
+        except Exception as e:
+            print(f"❌ Error in send_captcha_to_server: {e}")
             return False
 
     async def poll_for_answer(self, timeout=120):
