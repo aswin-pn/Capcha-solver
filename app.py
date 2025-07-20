@@ -8,7 +8,6 @@ app = Flask(__name__)
 # Store the latest image and answer in memory
 latest_image = None
 latest_answer = None
-latest_timestamp = None
 
 HTML_FORM = '''
 <!doctype html>
@@ -116,38 +115,22 @@ HTML_FORM = '''
 def index():
     return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
 
-@app.route('/upload', methods=['POST'])
-def upload_image():
-    global latest_image, latest_answer, latest_timestamp
-    import time
-    print(f"🔄 UPLOAD ENDPOINT CALLED - Current answer before: {latest_answer}")
-    if 'image' in request.files:
-        # New image upload - ALWAYS clear the answer and set new timestamp
-        latest_image = request.files['image'].read()
-        latest_answer = None
-        latest_timestamp = time.time()
-        print(f"🔄 IMAGE UPLOAD: Cache cleared - new image uploaded, answer reset to: {latest_answer}, timestamp: {latest_timestamp}")
-        return jsonify({'status': 'success', 'message': 'Image uploaded and cache cleared', 'timestamp': latest_timestamp})
-    print("❌ No image provided in upload request")
-    return jsonify({'status': 'error', 'message': 'No image provided'}), 400
-
 @app.route('/solve', methods=['POST', 'GET'])
 def solve():
-    global latest_image, latest_answer, latest_timestamp
-    import time
+    global latest_image, latest_answer
     if request.method == 'POST':
         if 'image' in request.files:
-            # New image upload - ALWAYS clear the answer
+            # New image upload
             latest_image = request.files['image'].read()
             latest_answer = None
-            latest_timestamp = time.time()
-            print(f"🔄 SOLVE ENDPOINT: Cache cleared - new image uploaded, answer reset to: {latest_answer}, timestamp: {latest_timestamp}")
             return render_template_string(HTML_FORM, image_url='/captcha_img', message="New CAPTCHA received! Please solve it.", message_type="success")
         elif 'answer' in request.form:
             # Human submits answer
             latest_answer = request.form['answer']
-            print(f"✅ SOLVE ENDPOINT: Answer received and stored: {latest_answer}")
-            return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, message="Answer submitted! You can close this tab.", message_type="success")
+            # Clear image and answer after submission
+            latest_image = None
+            latest_answer = None
+            return render_template_string(HTML_FORM, image_url=None, message="Answer submitted! You can close this tab.", message_type="success")
     # GET request: show form with image if available
     return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
 
@@ -160,55 +143,14 @@ def captcha_img():
 
 @app.route('/answer', methods=['GET'])
 def answer():
-    global latest_answer, latest_timestamp
-    import time
-    current_time = time.time()
-    print(f"🔍 ANSWER ENDPOINT CALLED - Current answer: {latest_answer}, timestamp: {latest_timestamp}, current time: {current_time}")
-    
-    # Only return answer if it was submitted after the latest image upload
-    if latest_answer is not None and latest_timestamp is not None:
-        # Check if answer was submitted within last 5 minutes of image upload
-        if current_time - latest_timestamp < 300:  # 5 minutes
-            print(f"📤 Returning valid answer: {latest_answer}")
-            return jsonify({'answer': latest_answer})
-        else:
-            print(f"⚠️  Answer too old, clearing: {latest_answer}")
-            latest_answer = None
-            return jsonify({'answer': None})
-    elif latest_answer is not None:
-        print(f"⚠️  Answer exists but no timestamp, clearing: {latest_answer}")
-        latest_answer = None
-        return jsonify({'answer': None})
-    
-    print("📤 Returning null answer")
+    global latest_answer
+    if latest_answer is not None:
+        return jsonify({'answer': latest_answer})
     return jsonify({'answer': None})
 
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy', 'service': 'captcha-solver'})
-
-@app.route('/debug', methods=['GET'])
-def debug():
-    global latest_image, latest_answer, latest_timestamp
-    import time
-    current_time = time.time()
-    return jsonify({
-        'latest_answer': latest_answer,
-        'has_image': latest_image is not None,
-        'image_size': len(latest_image) if latest_image else 0,
-        'latest_timestamp': latest_timestamp,
-        'current_time': current_time,
-        'time_diff': current_time - latest_timestamp if latest_timestamp else None
-    })
-
-@app.route('/clear', methods=['POST'])
-def clear_cache():
-    global latest_image, latest_answer, latest_timestamp
-    print(f"🔄 CLEAR ENDPOINT CALLED - Current answer before: {latest_answer}")
-    latest_answer = None
-    latest_timestamp = None
-    print(f"🔄 Manual cache clear - answer reset to: {latest_answer}, timestamp reset")
-    return jsonify({'status': 'cache_cleared', 'answer': latest_answer})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
