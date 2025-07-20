@@ -17,6 +17,7 @@ class LinkedInCaptchaSolver:
         self.browser = None
         self.context = None
         self.login_count = 0
+        self.current_captcha_id = None # Added to store captcha_id
 
     async def init_browser(self):
         print("Starting browser initialization...")
@@ -64,11 +65,6 @@ class LinkedInCaptchaSolver:
         """Check if we're on the security verification page and handle it"""
         try:
             print("Checking for security verification...")
-            
-            # Clear any existing cache at the very beginning
-            print("🔄 Clearing any existing CAPTCHA cache at start...")
-            await self.clear_captcha_cache()
-            await asyncio.sleep(1)
             
             # First check if we're on a challenge URL
             current_url = self.page.url
@@ -275,11 +271,6 @@ class LinkedInCaptchaSolver:
                 # except:
                 #     pass
                 
-                # Clear any existing cache BEFORE taking screenshot
-                print("🔄 Clearing any existing CAPTCHA cache before starting...")
-                await self.clear_captcha_cache()
-                await asyncio.sleep(1)
-                
                 # Send screenshot to solving server
                 try:
                     # Try to find a container element first
@@ -303,8 +294,8 @@ class LinkedInCaptchaSolver:
                         screenshot = await best_frame.page.screenshot(full_page=True, type='png')
                         print("✅ Took full page screenshot as fallback")
                     
-                    # Send to solving server (without clearing again since we already did)
-                    sent = await self.send_captcha_to_server_direct(screenshot)
+                    # Send to solving server
+                    sent = await self.send_captcha_to_server(screenshot)
                     if not sent:
                         print("Failed to send to solving server")
                         return False
@@ -612,13 +603,11 @@ class LinkedInCaptchaSolver:
             return False
 
     async def clear_captcha_cache(self):
-        """Clear any existing CAPTCHA answer before sending new one"""
         print("Clearing CAPTCHA cache...")
         try:
-            # Send a dummy image to clear the previous answer
             dummy_image = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\tpHYs\x00\x00\x0b\x13\x00\x00\x0b\x13\x01\x00\x9a\x9c\x18\x00\x00\x00\x07tIME\x07\xe7\x07\x13\x0c\x1d\x1c\xc8\xc8\xc8\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x178\xea\x00\x00\x00\x00IEND\xaeB`\x82'
             files = {'image': ('clear.png', dummy_image, 'image/png')}
-            response = requests.post('https://www.sellmyagent.com/solve', files=files, timeout=10)
+            response = requests.post('http://localhost:9000/solve', files=files, timeout=10)
             if response.status_code == 200:
                 print("✅ CAPTCHA cache cleared successfully")
                 return True
@@ -629,14 +618,29 @@ class LinkedInCaptchaSolver:
             print(f"⚠️  Error clearing cache: {e}")
             return False
 
-    async def send_captcha_to_server_direct(self, image_bytes):
-        """Send CAPTCHA image without clearing cache (for when cache is already cleared)"""
-        print("Sending CAPTCHA image to www.sellmyagent.com...")
+    async def get_current_captcha_id(self):
         try:
-            files = {'image': ('captcha.png', image_bytes, 'image/png')}
-            response = requests.post('https://www.sellmyagent.com/solve', files=files, timeout=10)
+            response = requests.get('https://www.sellmyagent.com/current', timeout=5)
             if response.status_code == 200:
-                print("✅ CAPTCHA image sent to www.sellmyagent.com successfully")
+                data = response.json()
+                return data.get('captcha_id')
+        except Exception as e:
+            print(f"[DEBUG] Error fetching captcha_id: {e}")
+        return None
+
+    async def send_captcha_to_server(self, image_bytes):
+        print("Attempting to send CAPTCHA to https://www.sellmyagent.com...")
+        try:
+            await self.clear_captcha_cache()
+            await asyncio.sleep(1)
+            files = {'image': ('captcha.png', image_bytes, 'image/png')}
+            headers = {'Accept': 'application/json'}
+            response = requests.post('https://www.sellmyagent.com/solve', files=files, headers=headers, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                captcha_id = data.get('captcha_id')
+                print(f"[DEBUG] Got captcha_id after upload: {captcha_id}")
+                self.current_captcha_id = captcha_id
                 return True
             else:
                 print(f"❌ Failed to send CAPTCHA image: {response.status_code}")
@@ -645,53 +649,56 @@ class LinkedInCaptchaSolver:
             print(f"❌ Error sending CAPTCHA to server: {e}")
             return False
 
-    async def send_captcha_to_server(self, image_bytes):
-        print("Attempting to send CAPTCHA to www.sellmyagent.com...")
-        try:
-            # First clear any existing cache
-            await self.clear_captcha_cache()
-            
-            # Wait a moment for cache to clear
-            await asyncio.sleep(1)
-            
-            # Now send the actual CAPTCHA image
-            return await self.send_captcha_to_server_direct(image_bytes)
-        except Exception as e:
-            print(f"❌ Error in send_captcha_to_server: {e}")
-            return False
-
     async def poll_for_answer(self, timeout=120):
         print("Starting to poll for human answer...")
         start = time.time()
         attempts = 0
-        
+        last_answer = None
+        first_poll = True
+        await asyncio.sleep(1)
         while time.time() - start < timeout:
             try:
                 response = requests.get('https://www.sellmyagent.com/answer', timeout=10)
                 if response.status_code == 200:
                     data = response.json()
                     answer = data.get('answer')
-                    
-                    if answer is not None and str(answer).isdigit():
+                    captcha_id = data.get('captcha_id')
+                    if first_poll:
+                        first_poll = False
+                        if answer is not None:
+                            print(f"⚠️ Detected potentially cached answer: {answer} on first poll (captcha_id={captcha_id})")
+                            print("⚠️ Clearing this cached answer...")
+                            await self.clear_captcha_cache()
+                            await asyncio.sleep(1)
+                            continue
+                    if answer != last_answer:
+                        if last_answer is not None:
+                            print(f"ℹ️ Answer changed from {last_answer} to {answer}")
+                        last_answer = answer
+                    # Only accept answer if captcha_id matches
+                    if answer is not None and str(answer).isdigit() and captcha_id == getattr(self, 'current_captcha_id', None):
                         answer_int = int(answer)
-                        if 0 <= answer_int <= 5:  # Valid CAPTCHA answer range
-                            print(f"✅ Received valid answer: {answer_int}")
+                        if 0 <= answer_int <= 5:
+                            if attempts < 3:
+                                print(f"✅ Found answer {answer_int} (captcha_id={captcha_id}), verifying it's fresh (attempt {attempts+1}/3)...")
+                                await asyncio.sleep(1)
+                                attempts += 1
+                                continue
+                            print(f"✅ Received valid answer: {answer_int} (captcha_id={captcha_id})")
                             return answer_int
                         else:
-                            print(f"⚠️  Invalid answer range: {answer_int} (should be 0-5)")
+                            print(f"⚠️ Invalid answer range: {answer_int} (should be 0-5)")
                     else:
                         attempts += 1
-                        if attempts % 10 == 0:  # Show progress every 20 seconds
+                        if attempts % 10 == 0:
                             print(f"⏳ Waiting for answer... (attempt {attempts})")
                         else:
                             print("Waiting for answer...")
                 else:
-                    print(f"⚠️  Polling error: HTTP {response.status_code}")
+                    print(f"⚠️ Polling error: HTTP {response.status_code}")
             except Exception as e:
-                print(f"⚠️  Polling error: {e}")
-            
+                print(f"⚠️ Polling error: {e}")
             await asyncio.sleep(2)
-        
         print("❌ Timeout waiting for human answer")
         return None
 
@@ -846,11 +853,61 @@ class LinkedInCaptchaSolver:
             await self.browser.close()
         print("Cleanup complete")
 
+async def clear_server_cache():
+    """Clear any cached answers on the server before starting"""
+    print("\n=== Clearing Server Cache ===")
+    try:
+        # Create a dummy image (1x1 pixel PNG)
+        dummy_image = b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\tpHYs\x00\x00\x0b\x13\x00\x00\x0b\x13\x01\x00\x9a\x9c\x18\x00\x00\x00\x07tIME\x07\xe7\x07\x13\x0c\x1d\x1c\xc8\xc8\xc8\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x178\xea\x00\x00\x00\x00IEND\xaeB`\x82'
+        
+        # Try multiple times to ensure it goes through
+        for attempt in range(3):
+            try:
+                print(f"Cache clear attempt {attempt+1}/3...")
+                response = requests.post('https://www.sellmyagent.com/solve', 
+                                      files={'image': ('clear_startup.png', dummy_image, 'image/png')}, 
+                                      timeout=5)
+                if response.status_code == 200:
+                    print("✅ Server cache cleared successfully")
+                    
+                    # Verify the answer is cleared
+                    try:
+                        response = requests.get('https://www.sellmyagent.com/answer', timeout=5)
+                        if response.status_code == 200:
+                            data = response.json()
+                            answer = data.get('answer')
+                            print(f"✅ Server answer state: {answer}")
+                            if answer is None:
+                                print("✅ Server cache is clean")
+                                return True
+                            else:
+                                print("⚠️ Server still has cached answer, trying again...")
+                        else:
+                            print(f"⚠️ Failed to verify cache clear: {response.status_code}")
+                    except Exception as e:
+                        print(f"⚠️ Error verifying cache clear: {e}")
+                else:
+                    print(f"⚠️ Cache clear request failed: {response.status_code}")
+            except Exception as e:
+                print(f"⚠️ Cache clear attempt {attempt+1} failed: {e}")
+            
+            # Wait before retrying
+            await asyncio.sleep(1)
+    except Exception as e:
+        print(f"⚠️ Error clearing server cache: {e}")
+    
+    print("Proceeding with LinkedIn login...")
+    return False
+
 async def main():
     email = "my.new.gallery.album@gmail.com"
     password = "Aswin04310"
     
     print("\n=== Starting LinkedIn CAPTCHA Solver ===")
+    
+    # Clear any cached answers from previous runs
+    await clear_server_cache()
+    
     solver = LinkedInCaptchaSolver(email, password)
     try:
         await solver.init_browser()

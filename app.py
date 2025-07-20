@@ -1,13 +1,18 @@
-from flask import Flask, request, send_file, render_template_string, jsonify
+from flask import Flask, request, send_file, render_template_string, jsonify, session
 import os
 from io import BytesIO
 from PIL import Image
+import time
+import uuid
 
 app = Flask(__name__)
+app.secret_key = 'debug-secret-key'  # Needed for session
 
-# Store the latest image and answer in memory
+# Store the latest image, answer, and a unique captcha_id in memory
 latest_image = None
 latest_answer = None
+latest_captcha_id = None
+latest_answer_time = None
 
 HTML_FORM = '''
 <!doctype html>
@@ -85,11 +90,56 @@ HTML_FORM = '''
             color: #721c24;
             border: 1px solid #f5c6cb;
         }
+        .debug {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+        }
     </style>
+    <script>
+        function now() {
+            return new Date().toISOString();
+        }
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('[DEBUG] Page loaded at', now());
+            var form = document.querySelector('form');
+            if (form) {
+                form.addEventListener('submit', function(e) {
+                    var val = form.querySelector('input[name="answer"]').value;
+                    var cid = form.querySelector('input[name="captcha_id"]').value;
+                    console.log('[DEBUG] Form submitted at', now(), 'Value entered:', val, 'captcha_id:', cid);
+                });
+            }
+            var img = document.querySelector('.captcha-image img');
+            if (img) {
+                img.addEventListener('load', function() {
+                    console.log('[DEBUG] CAPTCHA image loaded at', now(), img.src);
+                });
+            }
+            var answerInput = document.querySelector('input[name="answer"]');
+            if (answerInput) {
+                answerInput.addEventListener('input', function() {
+                    console.log('[DEBUG] Input changed at', now(), answerInput.value);
+                });
+                // Log initial value
+                console.log('[DEBUG] Initial input value at', now(), answerInput.value);
+            }
+            var cidInput = document.querySelector('input[name="captcha_id"]');
+            if (cidInput) {
+                console.log('[DEBUG] captcha_id for this form:', cidInput.value);
+            }
+        });
+    </script>
 </head>
 <body>
     <div class="container">
         <h2>🔐 CAPTCHA Solver</h2>
+        <div class="debug">
+            <b>captcha_id:</b> {{ captcha_id }}<br>
+            <b>Server time:</b> {{ server_time }}<br>
+            <b>Latest answer:</b> {{ latest_answer }}<br>
+            <b>Latest answer time:</b> {{ latest_answer_time }}<br>
+        </div>
         {% if image_url %}
             <div class="captcha-image">
                 <img src="{{ image_url }}" alt="CAPTCHA Image"/>
@@ -97,7 +147,8 @@ HTML_FORM = '''
         {% endif %}
         <form method="post" action="/solve">
             <div class="form-group">
-                <input type="number" name="answer" min="0" max="5" required placeholder="Enter answer (0-5)">
+                <input type="number" name="answer" min="0" max="5" required placeholder="Enter answer (0-5)" autocomplete="off">
+                <input type="hidden" name="captcha_id" value="{{ captcha_id }}">
                 <input type="submit" value="Submit Answer">
             </div>
         </form>
@@ -113,23 +164,44 @@ HTML_FORM = '''
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
+    global latest_captcha_id, latest_answer, latest_answer_time
+    return render_template_string(
+        HTML_FORM,
+        image_url='/captcha_img' if latest_image else None,
+        captcha_id=latest_captcha_id,
+        server_time=time.strftime('%Y-%m-%d %H:%M:%S'),
+        latest_answer=latest_answer,
+        latest_answer_time=latest_answer_time
+    )
 
 @app.route('/solve', methods=['POST', 'GET'])
 def solve():
-    global latest_image, latest_answer
+    global latest_image, latest_answer, latest_captcha_id, latest_answer_time
     if request.method == 'POST':
         if 'image' in request.files:
             # New image upload
             latest_image = request.files['image'].read()
             latest_answer = None
-            return render_template_string(HTML_FORM, image_url='/captcha_img', message="New CAPTCHA received! Please solve it.", message_type="success")
-        elif 'answer' in request.form:
+            latest_captcha_id = str(uuid.uuid4())
+            latest_answer_time = None
+            print(f'[DEBUG] New CAPTCHA uploaded at {time.strftime("%H:%M:%S")}, captcha_id={latest_captcha_id}')
+            if request.is_json or request.headers.get('Accept') == 'application/json' or request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                return jsonify({'captcha_id': latest_captcha_id})
+            return render_template_string(HTML_FORM, image_url='/captcha_img', captcha_id=latest_captcha_id, server_time=time.strftime('%Y-%m-%d %H:%M:%S'), latest_answer=latest_answer, latest_answer_time=latest_answer_time, message="New CAPTCHA received! Please solve it.", message_type="success")
+        elif 'answer' in request.form and 'captcha_id' in request.form:
             # Human submits answer
-            latest_answer = request.form['answer']
-            return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, message="Answer submitted! You can close this tab.", message_type="success")
+            answer = request.form['answer']
+            captcha_id = request.form['captcha_id']
+            print(f'[DEBUG] Answer submitted at {time.strftime("%H:%M:%S")}, answer={answer}, captcha_id={captcha_id}, expected_captcha_id={latest_captcha_id}')
+            if captcha_id == latest_captcha_id:
+                latest_answer = answer
+                latest_answer_time = time.strftime('%Y-%m-%d %H:%M:%S')
+                return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, captcha_id=latest_captcha_id, server_time=time.strftime('%Y-%m-%d %H:%M:%S'), latest_answer=latest_answer, latest_answer_time=latest_answer_time, message="Answer submitted! You can close this tab.", message_type="success")
+            else:
+                print(f'[DEBUG] Mismatched captcha_id! Submitted: {captcha_id}, Expected: {latest_captcha_id}')
+                return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, captcha_id=latest_captcha_id, server_time=time.strftime('%Y-%m-%d %H:%M:%S'), latest_answer=latest_answer, latest_answer_time=latest_answer_time, message="Mismatched CAPTCHA ID! Please reload and try again.", message_type="error")
     # GET request: show form with image if available
-    return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
+    return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, captcha_id=latest_captcha_id, server_time=time.strftime('%Y-%m-%d %H:%M:%S'), latest_answer=latest_answer, latest_answer_time=latest_answer_time)
 
 @app.route('/captcha_img')
 def captcha_img():
@@ -140,19 +212,30 @@ def captcha_img():
 
 @app.route('/answer', methods=['GET'])
 def answer():
-    global latest_answer, latest_image
+    global latest_answer, latest_image, latest_captcha_id, latest_answer_time
     if latest_answer is not None:
         ans = latest_answer
+        ans_time = latest_answer_time
+        cid = latest_captcha_id
+        print(f'[DEBUG] /answer polled at {time.strftime("%H:%M:%S")}, returning answer={ans}, captcha_id={cid}, answer_time={ans_time}')
         # Clear both after the answer is retrieved
         latest_answer = None
         latest_image = None
-        return jsonify({'answer': ans})
+        latest_captcha_id = None
+        latest_answer_time = None
+        return jsonify({'answer': ans, 'captcha_id': cid, 'answer_time': ans_time})
+    print(f'[DEBUG] /answer polled at {time.strftime("%H:%M:%S")}, no answer available')
     return jsonify({'answer': None})
+
+@app.route('/current', methods=['GET'])
+def current():
+    global latest_captcha_id
+    return jsonify({'captcha_id': latest_captcha_id})
 
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy', 'service': 'captcha-solver'})
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 9000))
     app.run(host='0.0.0.0', port=port, debug=False) 
