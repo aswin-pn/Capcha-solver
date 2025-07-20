@@ -127,10 +127,7 @@ def solve():
         elif 'answer' in request.form:
             # Human submits answer
             latest_answer = request.form['answer']
-            # Clear image and answer after submission
-            latest_image = None
-            latest_answer = None
-            return render_template_string(HTML_FORM, image_url=None, message="Answer submitted! You can close this tab.", message_type="success")
+            return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, message="Answer submitted! You can close this tab.", message_type="success")
     # GET request: show form with image if available
     return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
 
@@ -143,9 +140,13 @@ def captcha_img():
 
 @app.route('/answer', methods=['GET'])
 def answer():
-    global latest_answer
+    global latest_answer, latest_image
     if latest_answer is not None:
-        return jsonify({'answer': latest_answer})
+        ans = latest_answer
+        # Clear both after the answer is retrieved
+        latest_answer = None
+        latest_image = None
+        return jsonify({'answer': ans})
     return jsonify({'answer': None})
 
 @app.route('/health')
