@@ -115,6 +115,17 @@ HTML_FORM = '''
 def index():
     return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
 
+@app.route('/upload', methods=['POST'])
+def upload_image():
+    global latest_image, latest_answer
+    if 'image' in request.files:
+        # New image upload - ALWAYS clear the answer
+        latest_image = request.files['image'].read()
+        latest_answer = None
+        print(f"🔄 IMAGE UPLOAD: Cache cleared - new image uploaded, answer reset to: {latest_answer}")
+        return jsonify({'status': 'success', 'message': 'Image uploaded and cache cleared'})
+    return jsonify({'status': 'error', 'message': 'No image provided'}), 400
+
 @app.route('/solve', methods=['POST', 'GET'])
 def solve():
     global latest_image, latest_answer
