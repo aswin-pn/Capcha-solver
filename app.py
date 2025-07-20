@@ -120,13 +120,15 @@ def solve():
     global latest_image, latest_answer
     if request.method == 'POST':
         if 'image' in request.files:
-            # New image upload
+            # New image upload - ALWAYS clear the answer
             latest_image = request.files['image'].read()
             latest_answer = None
+            print(f"🔄 Cache cleared - new image uploaded, answer reset to: {latest_answer}")
             return render_template_string(HTML_FORM, image_url='/captcha_img', message="New CAPTCHA received! Please solve it.", message_type="success")
         elif 'answer' in request.form:
             # Human submits answer
             latest_answer = request.form['answer']
+            print(f"✅ Answer received and stored: {latest_answer}")
             return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None, message="Answer submitted! You can close this tab.", message_type="success")
     # GET request: show form with image if available
     return render_template_string(HTML_FORM, image_url='/captcha_img' if latest_image else None)
@@ -148,6 +150,13 @@ def answer():
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy', 'service': 'captcha-solver'})
+
+@app.route('/clear', methods=['POST'])
+def clear_cache():
+    global latest_image, latest_answer
+    latest_answer = None
+    print(f"🔄 Manual cache clear - answer reset to: {latest_answer}")
+    return jsonify({'status': 'cache_cleared', 'answer': latest_answer})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
